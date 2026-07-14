@@ -1,6 +1,7 @@
 #include "framework.h"
 #include "console.h"
 #include "overlay.h"
+#include "modules/suite.h"
 #include <thread>
 #include <chrono>
 #include <atomic>
@@ -18,20 +19,22 @@ static int   g_mouseX = 0, g_mouseY = 0;
 static int   g_mouseButtons = 0;
 static root* g_currentRoot = nullptr;
 static bool  g_overlayVisible = true;
-static bool  g_logMonitor = true;
-static bool  g_fsCmdMonitor = true;
 
 static bool  g_showInfo = true;
 static bool  g_showLogs = true;
 static bool  g_showFsCmd = true;
+static bool  g_showSuite = true;
 
 
 void OnAdvance(root* r, float dt) {
     g_currentRoot = r;
     g_frameCount++;
-    g_lastDt = dt;
 
-    g_fpsAccum += dt;
+    // Suite processes dt manipulation + macro tick
+    float modifiedDt = Suite::ProcessAdvance(dt);
+    g_lastDt = modifiedDt;
+
+    g_fpsAccum += dt; // use real dt for FPS calc
     g_fpsFrames++;
     DWORD now = GetTickCount();
     if (now - g_fpsLastTick >= 1000) {
@@ -43,14 +46,16 @@ void OnAdvance(root* r, float dt) {
 }
 
 void OnDisplay(root* r) {
-    // post-display callback — reserved for future use
+    // post-display — reserved
 }
 
 bool OnMouse(root* r, int& x, int& y, int& buttons, int& wheel) {
     g_mouseX = x;
     g_mouseY = y;
     g_mouseButtons = buttons;
-    return true; // return false to block input
+
+    Suite::ProcessMouse(x, y, buttons);
+    return true;
 }
 
 bool OnKey(player* p, unsigned short& key, bool& down) {
@@ -76,7 +81,7 @@ bool OnKey(player* p, unsigned short& key, bool& down) {
         return false;
     }
 
-    // F4: toggle fscommand monitor
+    // F4: toggle FSCommand monitor
     if (key == VK_F4 && down) {
         g_showFsCmd = !g_showFsCmd;
         Console::Info("FsCommand monitor %s", g_showFsCmd ? "ON" : "OFF");
@@ -89,7 +94,14 @@ bool OnKey(player* p, unsigned short& key, bool& down) {
         return false;
     }
 
-    return true; // pass input through
+    // Pass to suite (F5-F8 panels, speed control numpad, macro F9-F12)
+    if (!Suite::ProcessKey(key, down)) return false;
+
+    return true;
+}
+
+void OnFSCommand(const std::string& cmd, const std::string& args) {
+    Suite::ProcessFSCommand(cmd, args);
 }
 
 void OnEndScene(IDirect3DDevice9* dev) {
@@ -105,22 +117,23 @@ void OnEndScene(IDirect3DDevice9* dev) {
     int panelX = 10;
 
     // Header bar
-    Overlay::DrawFilledRect(dev, panelX, panelY, 320, 22, Overlay::BgDark);
+    Overlay::DrawFilledRect(dev, panelX, panelY, 520, 22, Overlay::BgDark);
     Overlay::DrawText(panelX + 5, panelY + 4, Overlay::Cyan,
-        "W101 Framework | F1:Toggle F2:Info F3:Logs F4:Cmd END:Eject");
+        "W101 INTELLIGENCE SUITE | F1:Overlay F2:Info F3:Logs F4:Cmd END:Eject");
     panelY += 26;
 
     // Info panel
     if (g_showInfo) {
-        Overlay::DrawFilledRect(dev, panelX, panelY, 280, 100, Overlay::BgPanel);
-        Overlay::DrawRect(panelX, panelY, 280, 100, Overlay::Cyan, false);
+        Overlay::DrawFilledRect(dev, panelX, panelY, 320, 100, Overlay::BgPanel);
+        Overlay::DrawRect(panelX, panelY, 320, 100, Overlay::Cyan, false);
 
         int y = panelY + 5;
         Overlay::DrawText(panelX + 5, y, Overlay::Yellow, "--- Game State ---"); y += 16;
         Overlay::DrawText(panelX + 5, y, Overlay::White,
-            "FPS: %.1f  |  dt: %.4f", g_fps, g_lastDt); y += 14;
+            "FPS: %.1f  |  Real dt: %.4f  |  Mod dt: %.4f",
+            g_fps, SpeedControl::GetRealDt(), SpeedControl::GetModDt()); y += 14;
         Overlay::DrawText(panelX + 5, y, Overlay::White,
-            "Frame: %u", g_frameCount); y += 14;
+            "Frame: %u  |  Speed: %s", g_frameCount, SpeedControl::GetSpeedLabel()); y += 14;
         Overlay::DrawText(panelX + 5, y, Overlay::White,
             "Mouse: (%d, %d)  Btn: %d", g_mouseX, g_mouseY, g_mouseButtons); y += 14;
         Overlay::DrawText(panelX + 5, y, Overlay::White,
@@ -162,7 +175,7 @@ void OnEndScene(IDirect3DDevice9* dev) {
         panelY += logHeight + 4;
     }
 
-    // FsCommand monitor
+    // FsCommand monitor (base framework)
     if (g_showFsCmd) {
         auto& cmds = Framework::GetFsCommandBuffer();
         int cmdCount = (int)cmds.size();
@@ -182,7 +195,12 @@ void OnEndScene(IDirect3DDevice9* dev) {
             Overlay::DrawText(panelX + 5, y, Overlay::Cyan, "%s", line.c_str());
             y += 13;
         }
+
+        panelY += cmdHeight + 4;
     }
+
+    // Intelligence Suite panels (right column)
+    Suite::RenderOverlay(dev, 540, 10);
 
     Overlay::Render(dev);
 }
@@ -192,7 +210,7 @@ void OnReset(IDirect3DDevice9* dev, D3DPRESENT_PARAMETERS* pp) {
 }
 
 void MainThread(HMODULE hModule) {
-    Console::Open("W101 Framework");
+    Console::Open("W101 Intelligence Suite");
     Console::Header();
 
     Console::Info("Module base: 0x%p", hModule);
@@ -200,7 +218,7 @@ void MainThread(HMODULE hModule) {
     Console::Separator();
 
     // Init framework hooks
-    Console::Info("Installing hooks...");
+    Console::Info("Installing core hooks...");
 
     if (!Framework::Init(hModule)) {
         Console::Error("Framework init failed");
@@ -224,6 +242,11 @@ void MainThread(HMODULE hModule) {
     Framework::SetMouseCallback(OnMouse);
     Framework::SetKeyCallback(OnKey);
 
+    Console::Separator();
+
+    // Init Intelligence Suite modules
+    Console::Info("Loading Intelligence Suite modules...");
+    Suite::Init();
     Console::Separator();
 
     // Find game window for D3D9
@@ -250,15 +273,29 @@ void MainThread(HMODULE hModule) {
     }
 
     Console::Separator();
-    Console::Info("Framework active. Keybinds:");
-    Console::Info("  F1  = Toggle overlay");
-    Console::Info("  F2  = Toggle info panel");
-    Console::Info("  F3  = Toggle log monitor");
-    Console::Info("  F4  = Toggle FSCommand monitor");
-    Console::Info("  END = Eject DLL");
+    Console::Info("KEYBINDS:");
+    Console::Info("  F1      = Toggle overlay");
+    Console::Info("  F2      = Toggle info panel");
+    Console::Info("  F3      = Toggle log monitor");
+    Console::Info("  F4      = Toggle FSCommand monitor");
+    Console::Info("  F5      = Toggle speed panel");
+    Console::Info("  F6      = Toggle network panel");
+    Console::Info("  F7      = Toggle script panel");
+    Console::Info("  F8      = Toggle macro panel");
+    Console::Info("  F9      = Start/stop recording");
+    Console::Info("  F10     = Play last macro");
+    Console::Info("  F11     = Loop macro / pause");
+    Console::Info("  F12     = Stop playback");
+    Console::Info("  Num+/-  = Speed up/down");
+    Console::Info("  Num*    = Reset speed");
+    Console::Info("  Num/    = Freeze time");
+    Console::Info("  Num0    = Toggle speed control");
+    Console::Info("  Num1-7  = Speed presets");
+    Console::Info("  END     = Eject DLL");
     Console::Separator();
+    Console::Success("Intelligence Suite ACTIVE — all systems go");
 
-    // Main loop — keep DLL alive
+    // Main loop
     while (g_running) {
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
@@ -267,7 +304,8 @@ void MainThread(HMODULE hModule) {
         }
     }
 
-    Console::Warn("Ejecting...");
+    Console::Warn("Ejecting Intelligence Suite...");
+    Suite::Shutdown();
     Framework::Shutdown();
     Overlay::Release();
     Console::Close();
