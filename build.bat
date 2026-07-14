@@ -54,14 +54,18 @@ if errorlevel 1 (
 :: Copy output
 echo.
 set "DLL=Release\w101suite.dll"
+set "EXE=Release\w101inject.exe"
 if exist "%DLL%" (
     copy /Y "%DLL%" "..\w101suite.dll" >nul
     echo [OK] Built: w101suite.dll
-    echo [OK] Size:
     for %%A in ("%DLL%") do echo        %%~zA bytes
 ) else (
-    echo [WARN] DLL not found at expected path, checking...
-    dir /s /b *.dll 2>nul
+    echo [WARN] DLL not found at expected path
+)
+if exist "%EXE%" (
+    copy /Y "%EXE%" "..\w101inject.exe" >nul
+    echo [OK] Built: w101inject.exe
+    for %%A in ("%EXE%") do echo        %%~zA bytes
 )
 
 cd ..

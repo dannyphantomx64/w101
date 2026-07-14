@@ -63,3 +63,18 @@ endif()
 set_target_properties(w101suite PROPERTIES
     LINK_FLAGS "/MANIFEST:NO"
 )
+
+# --- Injector executable ---
+add_executable(w101inject injector/injector.cpp)
+
+if(MSVC)
+    target_compile_options(w101inject PRIVATE /W3 /O2 /GS-)
+    target_compile_definitions(w101inject PRIVATE
+        WIN32_LEAN_AND_MEAN
+        _CRT_SECURE_NO_WARNINGS
+    )
+endif()
+
+set_target_properties(w101inject PROPERTIES
+    OUTPUT_NAME "w101inject"
+)
