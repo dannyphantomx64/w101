@@ -9,6 +9,10 @@
 #include "memory_scanner.h"
 #include "script_executor.h"
 #include "entity_radar.h"
+#include "camera_control.h"
+#include "anti_afk.h"
+#include "chat_logger.h"
+#include "config_system.h"
 #include "../overlay.h"
 #include "../console.h"
 
@@ -25,17 +29,20 @@ namespace W101Hook {
             PANEL_SCANNER,
             PANEL_EXECUTOR,
             PANEL_RADAR,
+            PANEL_CAMERA,
+            PANEL_ANTIAFK,
+            PANEL_CHAT,
             PANEL_COUNT
         };
 
     private:
         static inline bool panelVisible[PANEL_COUNT] = {
-            true, true, true, true, true, false, true, true
+            true, true, true, true, true, false, true, true, true, true, true
         };
         static inline bool suiteActive = false;
 
         static inline const char* panelNames[] = {
-            "SPD", "NET", "SCR", "MAC", "TP", "MEM", "EXE", "RAD"
+            "SPD", "NET", "SCR", "MAC", "TP", "MEM", "EXE", "RAD", "CAM", "AFK", "CHT"
         };
 
         static inline D3DCOLOR panelColors[] = {
@@ -47,13 +54,21 @@ namespace W101Hook {
             D3DCOLOR_ARGB(255, 255, 100, 100),    // red - scanner
             D3DCOLOR_ARGB(255, 180, 120, 255),    // purple - executor
             D3DCOLOR_ARGB(255, 100, 255, 200),    // teal - radar
+            D3DCOLOR_ARGB(255, 100, 200, 255),    // sky blue - camera
+            D3DCOLOR_ARGB(255, 200, 200, 60),     // lime - anti-afk
+            D3DCOLOR_ARGB(255, 200, 160, 255),    // lavender - chat
         };
 
     public:
         static bool Init() {
-            Console::Info("Initializing Intelligence Suite v2...");
+            Console::Info("Initializing Intelligence Suite v3...");
 
-            // Speed control — no init needed
+            // Config system — load first so other modules can read settings
+            if (ConfigSystem::Init()) {
+                Console::Success("ConfigSystem: %s (%d entries)",
+                    ConfigSystem::GetPath().c_str(), ConfigSystem::GetEntryCount());
+            }
+
             Console::Success("SpeedControl: ready (Num+/- speed, Num/ freeze)");
 
             if (PacketSniffer::Init()) {
@@ -71,9 +86,9 @@ namespace W101Hook {
             Console::Success("MacroEngine: ready (F9=rec F10=play F11=loop F12=stop)");
 
             if (Teleporter::Init()) {
-                Console::Success("Teleporter: matrix read/write active (INS=save HOME=go Ctrl+N=noclip)");
+                Console::Success("Teleporter: matrix read/write active");
             } else {
-                Console::Warn("Teleporter: sprite matrix functions not resolved");
+                Console::Warn("Teleporter: sprite matrix not resolved");
             }
 
             if (MemoryScanner::Init()) {
@@ -83,7 +98,7 @@ namespace W101Hook {
             if (ScriptExecutor::Init()) {
                 Console::Success("ScriptExecutor: call_method invocation ready");
             } else {
-                Console::Warn("ScriptExecutor: call_method resolution failed");
+                Console::Warn("ScriptExecutor: resolution failed");
             }
 
             if (EntityRadar::Init()) {
@@ -92,18 +107,54 @@ namespace W101Hook {
                 Console::Warn("EntityRadar: sprite functions not resolved");
             }
 
+            if (CameraControl::Init()) {
+                Console::Success("CameraControl: viewport manipulation ready");
+            }
+
+            if (AntiAFK::Init()) {
+                Console::Success("AntiAFK: idle prevention ready (Ctrl+Shift+A toggle)");
+            }
+
+            if (ChatLogger::Init()) {
+                Console::Success("ChatLogger: FSCommand chat capture ready");
+                if (ConfigSystem::GetBool("chat", "file_logging", false)) {
+                    ChatLogger::StartFileLogging();
+                }
+            }
+
+            // Load panel visibility from config
+            for (int i = 0; i < PANEL_COUNT; i++) {
+                char key[32];
+                snprintf(key, sizeof(key), "panel_%d", i);
+                if (ConfigSystem::HasKey("panels", key)) {
+                    panelVisible[i] = ConfigSystem::GetBool("panels", key, true);
+                }
+            }
+
             suiteActive = true;
-            Console::Success("Intelligence Suite v2: ALL %d MODULES LOADED", PANEL_COUNT);
+            Console::Success("Intelligence Suite v3: ALL %d MODULES LOADED", PANEL_COUNT);
             return true;
         }
 
         static void Shutdown() {
+            // Save panel state to config
+            for (int i = 0; i < PANEL_COUNT; i++) {
+                char key[32];
+                snprintf(key, sizeof(key), "panel_%d", i);
+                ConfigSystem::SetBool("panels", key, panelVisible[i]);
+            }
+
             PacketSniffer::Shutdown();
             ScriptMonitor::Shutdown();
             Teleporter::Shutdown();
             MemoryScanner::Shutdown();
             ScriptExecutor::Shutdown();
             EntityRadar::Shutdown();
+            CameraControl::Shutdown();
+            AntiAFK::Shutdown();
+            ChatLogger::Shutdown();
+            ConfigSystem::Shutdown(); // saves config last
+
             if (MacroEngine::IsPlaying()) MacroEngine::StopPlayback();
             if (MacroEngine::IsRecording()) MacroEngine::StopRecording();
             suiteActive = false;
@@ -118,22 +169,29 @@ namespace W101Hook {
             ScriptExecutor::ProcessQueue(r);
             Teleporter::Update(r, dt);
             EntityRadar::Update(r, dt);
+            CameraControl::Update(r, dt);
+            AntiAFK::Update(dt);
             return SpeedControl::ProcessDt(dt);
         }
 
         static bool ProcessKey(unsigned short key, bool down, root* r) {
-            // Ctrl+1 through Ctrl+8 toggle panels
-            if (down && (GetAsyncKeyState(VK_CONTROL) & 0x8000)) {
-                if (key >= '1' && key <= '8') {
+            // Ctrl+1-9,0 toggle panels
+            if (down && (GetAsyncKeyState(VK_CONTROL) & 0x8000) &&
+                !(GetAsyncKeyState(VK_SHIFT) & 0x8000)) {
+                if (key >= '1' && key <= '9') {
                     int panel = key - '1';
                     if (panel < PANEL_COUNT) {
                         panelVisible[panel] = !panelVisible[panel];
                         return false;
                     }
                 }
+                if (key == '0' && PANEL_COUNT > 9) {
+                    panelVisible[9] = !panelVisible[9];
+                    return false;
+                }
             }
 
-            // F5-F8 kept for backward compat
+            // F5-F8 backward compat
             if (down) {
                 switch (key) {
                     case VK_F5: panelVisible[PANEL_SPEED]   = !panelVisible[PANEL_SPEED]; return false;
@@ -143,14 +201,11 @@ namespace W101Hook {
                 }
             }
 
-            // Speed control
             if (!SpeedControl::HandleKey(key, down)) return false;
-
-            // Macro engine
             if (!MacroEngine::HandleKey(key, down)) return false;
-
-            // Teleporter
             if (!Teleporter::HandleKey(key, down, r)) return false;
+            if (!CameraControl::HandleKey(key, down)) return false;
+            if (!AntiAFK::HandleKey(key, down)) return false;
 
             // Radar mode cycling: Ctrl+R
             if (down && key == 'R' && (GetAsyncKeyState(VK_CONTROL) & 0x8000)) {
@@ -158,23 +213,35 @@ namespace W101Hook {
                 return false;
             }
 
-            // Record input for macro if recording
+            // Record input for macro
             if (MacroEngine::IsRecording()) {
                 if (down) MacroEngine::RecordKeyDown(key);
                 else MacroEngine::RecordKeyUp(key);
             }
 
+            // Reset anti-afk timer on real input
+            AntiAFK::OnRealInput();
+
             return true;
         }
 
-        static void ProcessMouse(int x, int y, int buttons) {
+        static void ProcessMouse(int x, int y, int buttons, int wheel) {
             if (MacroEngine::IsRecording()) {
                 MacroEngine::RecordMouseMove(x, y);
             }
+            if (wheel != 0) {
+                CameraControl::ProcessWheel(wheel);
+            }
+            AntiAFK::OnRealInput();
         }
 
         static void ProcessFSCommand(const std::string& cmd, const std::string& args) {
             ScriptMonitor::ProcessFSCommand(cmd, args);
+            ChatLogger::ProcessFSCommand(cmd, args);
+        }
+
+        static void ProcessLogMessage(const std::string& msg, bool isError) {
+            ChatLogger::ProcessLogMessage(msg, isError);
         }
 
         // --- Overlay ---
@@ -188,7 +255,7 @@ namespace W101Hook {
             // Suite header
             Overlay::DrawFilledRect(dev, x, y, 530, 20, Overlay::BgDark);
             Overlay::DrawText(x + 5, y + 3, Overlay::Cyan,
-                "W101 INTELLIGENCE SUITE v2 | Ctrl+[1-8] toggle panels");
+                "W101 SUITE v3 | Ctrl+[1-9,0] panels | %d modules", PANEL_COUNT);
             y += 24;
 
             // Module status bar
@@ -197,24 +264,27 @@ namespace W101Hook {
             for (int i = 0; i < PANEL_COUNT; i++) {
                 D3DCOLOR c = panelVisible[i] ? panelColors[i] : D3DCOLOR_ARGB(255, 80, 80, 80);
                 Overlay::DrawText(statusX, y + 2, c, "[%s]", panelNames[i]);
-                statusX += 50;
+                statusX += 42;
             }
             y += 20;
 
-            // Left column panels
+            // Left column
             int leftY = y;
             if (panelVisible[PANEL_SPEED])      leftY = RenderSpeedPanel(dev, x, leftY);
             if (panelVisible[PANEL_NETWORK])     leftY = RenderNetworkPanel(dev, x, leftY);
             if (panelVisible[PANEL_SCRIPTS])     leftY = RenderScriptPanel(dev, x, leftY);
             if (panelVisible[PANEL_MACROS])      leftY = RenderMacroPanel(dev, x, leftY);
 
-            // Right column panels
+            // Right column
             int rightX = x + 540;
             int rightY = startY;
             if (panelVisible[PANEL_TELEPORTER])  rightY = Teleporter::RenderPanel(dev, rightX, rightY);
+            if (panelVisible[PANEL_CAMERA])      rightY = CameraControl::RenderPanel(dev, rightX, rightY);
+            if (panelVisible[PANEL_ANTIAFK])     rightY = AntiAFK::RenderPanel(dev, rightX, rightY);
             if (panelVisible[PANEL_SCANNER])     rightY = MemoryScanner::RenderPanel(dev, rightX, rightY);
             if (panelVisible[PANEL_EXECUTOR])    rightY = ScriptExecutor::RenderPanel(dev, rightX, rightY);
             if (panelVisible[PANEL_RADAR])       rightY = EntityRadar::RenderPanel(dev, rightX, rightY);
+            if (panelVisible[PANEL_CHAT])        rightY = ChatLogger::RenderPanel(dev, rightX, rightY);
         }
 
     private:
@@ -222,7 +292,6 @@ namespace W101Hook {
             int h = 70;
             Overlay::DrawFilledRect(dev, x, y, 280, h, Overlay::BgPanel);
             Overlay::DrawRect(x, y, 280, h, panelColors[PANEL_SPEED], false);
-
             int ty = y + 4;
             Overlay::DrawText(x + 5, ty, panelColors[PANEL_SPEED], "SPEED CONTROL"); ty += 16;
             Overlay::DrawText(x + 5, ty, SpeedControl::GetSpeedColor(),
@@ -234,15 +303,12 @@ namespace W101Hook {
                 "Drift: %.2fs  |  Num+/- speed  */  freeze",
                 SpeedControl::GetAccumDrift()); ty += 14;
 
-            // Speed bar
             float ratio = static_cast<float>(SpeedControl::GetPresetIndex()) /
                           static_cast<float>(SpeedControl::PRESET_COUNT - 1);
-            int barW = 260;
-            int filled = static_cast<int>(ratio * barW);
+            int barW = 260, filled = static_cast<int>(ratio * barW);
             Overlay::DrawFilledRect(dev, x + 10, ty, barW, 6, D3DCOLOR_ARGB(100, 60, 60, 60));
             if (filled > 0)
                 Overlay::DrawFilledRect(dev, x + 10, ty, filled, 6, SpeedControl::GetSpeedColor());
-
             return y + h + 4;
         }
 
@@ -250,13 +316,10 @@ namespace W101Hook {
             auto recent = PacketSniffer::GetRecentPackets(8);
             int entryCount = static_cast<int>(recent.size());
             int h = 56 + entryCount * 13;
-
             Overlay::DrawFilledRect(dev, x, y, 520, h, Overlay::BgPanel);
             Overlay::DrawRect(x, y, 520, h, panelColors[PANEL_NETWORK], false);
-
             int ty = y + 4;
             auto& stats = PacketSniffer::GetStats();
-
             Overlay::DrawText(x + 5, ty, panelColors[PANEL_NETWORK],
                 "PACKET SNIFFER %s", PacketSniffer::IsLogging() ? "[LIVE]" : "[PAUSED]"); ty += 16;
             Overlay::DrawText(x + 5, ty, Overlay::White,
@@ -267,7 +330,6 @@ namespace W101Hook {
                 PacketSniffer::FormatRate(stats.recvRate).c_str()); ty += 14;
             Overlay::DrawText(x + 5, ty, Overlay::Gray,
                 "Buffer: %d packets", PacketSniffer::GetPacketCount()); ty += 16;
-
             for (auto& pkt : recent) {
                 D3DCOLOR dirColor = (pkt.dir == PacketSniffer::OUTBOUND) ?
                     D3DCOLOR_ARGB(255, 255, 150, 50) : D3DCOLOR_ARGB(255, 50, 200, 255);
@@ -277,7 +339,6 @@ namespace W101Hook {
                     "%s %5u  %s", dirStr, pkt.size, hex.c_str());
                 ty += 13;
             }
-
             return y + h + 4;
         }
 
@@ -287,24 +348,19 @@ namespace W101Hook {
             int callCount = static_cast<int>(calls.size());
             int fsCount = static_cast<int>(fsCmds.size());
             int h = 54 + callCount * 13 + 18 + fsCount * 13;
-
             Overlay::DrawFilledRect(dev, x, y, 520, h, Overlay::BgPanel);
             Overlay::DrawRect(x, y, 520, h, panelColors[PANEL_SCRIPTS], false);
-
             int ty = y + 4;
             Overlay::DrawText(x + 5, ty, panelColors[PANEL_SCRIPTS],
                 "SCRIPT MONITOR %s", ScriptMonitor::IsLogging() ? "[LIVE]" : "[PAUSED]"); ty += 16;
             Overlay::DrawText(x + 5, ty, Overlay::White,
                 "Total calls: %u  |  Unique: %d  |  FSCmds: %u",
-                ScriptMonitor::GetTotalCalls(),
-                ScriptMonitor::GetUniqueMethodCount(),
+                ScriptMonitor::GetTotalCalls(), ScriptMonitor::GetUniqueMethodCount(),
                 ScriptMonitor::GetTotalFsCmds()); ty += 14;
-
             if (!ScriptMonitor::GetFilter().empty()) {
                 Overlay::DrawText(x + 5, ty, Overlay::Yellow,
                     "Filter: \"%s\"", ScriptMonitor::GetFilter().c_str()); ty += 14;
             }
-
             Overlay::DrawText(x + 5, ty, Overlay::Yellow, "--- Methods ---"); ty += 14;
             for (auto& call : calls) {
                 std::string name = call.methodName;
@@ -313,7 +369,6 @@ namespace W101Hook {
                     "#%u %s (args:%d)", call.callIndex, name.c_str(), call.argCount);
                 ty += 13;
             }
-
             ty += 4;
             Overlay::DrawText(x + 5, ty, Overlay::Yellow, "--- FSCommands ---"); ty += 14;
             for (auto& cmd : fsCmds) {
@@ -325,7 +380,6 @@ namespace W101Hook {
                     "[%s] %s", cmd.category.c_str(), line.c_str());
                 ty += 13;
             }
-
             return y + h + 4;
         }
 
@@ -333,18 +387,15 @@ namespace W101Hook {
             int h = 68;
             Overlay::DrawFilledRect(dev, x, y, 360, h, Overlay::BgPanel);
             Overlay::DrawRect(x, y, 360, h, panelColors[PANEL_MACROS], false);
-
             int ty = y + 4;
             Overlay::DrawText(x + 5, ty, panelColors[PANEL_MACROS], "MACRO ENGINE"); ty += 16;
             Overlay::DrawText(x + 5, ty, MacroEngine::GetStateColor(),
                 "State: %s  |  Speed: %.1fx",
                 MacroEngine::GetStateLabel(), MacroEngine::GetPlaybackSpeed()); ty += 14;
-
             if (MacroEngine::IsRecording()) {
                 Overlay::DrawText(x + 5, ty, Overlay::Red,
                     "Recording: \"%s\"  Events: %d  Duration: %s",
-                    MacroEngine::GetCurrentName().c_str(),
-                    MacroEngine::GetEventCount(),
+                    MacroEngine::GetCurrentName().c_str(), MacroEngine::GetEventCount(),
                     MacroEngine::FormatDuration(MacroEngine::GetRecordDuration()).c_str());
             } else if (MacroEngine::IsPlaying() || MacroEngine::IsPaused()) {
                 int loops = MacroEngine::GetLoopsRemaining();
@@ -352,20 +403,16 @@ namespace W101Hook {
                     "Playing: \"%s\"  Progress: %.0f%%  Loop: %d%s",
                     MacroEngine::GetCurrentName().c_str(),
                     MacroEngine::GetPlaybackProgress() * 100.0f,
-                    MacroEngine::GetLoopCount(),
-                    loops < 0 ? " [INF]" : "");
+                    MacroEngine::GetLoopCount(), loops < 0 ? " [INF]" : "");
             } else {
                 Overlay::DrawText(x + 5, ty, Overlay::Gray,
                     "Saved: %d  |  Recorded: %u  |  Played: %u",
-                    MacroEngine::GetSavedMacroCount(),
-                    MacroEngine::GetTotalRecorded(),
+                    MacroEngine::GetSavedMacroCount(), MacroEngine::GetTotalRecorded(),
                     MacroEngine::GetTotalPlayed());
             }
             ty += 14;
-
             Overlay::DrawText(x + 5, ty, Overlay::Gray,
                 "F9:Rec  F10:Play  F11:Loop  F12:Stop");
-
             return y + h + 4;
         }
     };

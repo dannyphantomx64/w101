@@ -54,7 +54,7 @@ bool OnMouse(root* r, int& x, int& y, int& buttons, int& wheel) {
     g_mouseY = y;
     g_mouseButtons = buttons;
 
-    Suite::ProcessMouse(x, y, buttons);
+    Suite::ProcessMouse(x, y, buttons, wheel);
     return true;
 }
 
@@ -274,29 +274,34 @@ void MainThread(HMODULE hModule) {
 
     Console::Separator();
     Console::Info("KEYBINDS:");
-    Console::Info("  F1       = Toggle overlay");
-    Console::Info("  F2       = Toggle info panel");
-    Console::Info("  F3       = Toggle log monitor");
-    Console::Info("  F4       = Toggle FSCommand monitor");
-    Console::Info("  F5-F8    = Toggle speed/net/script/macro panels");
-    Console::Info("  Ctrl+1-8 = Toggle all 8 panels by index");
-    Console::Info("  F9       = Start/stop macro recording");
-    Console::Info("  F10      = Play last macro");
-    Console::Info("  F11      = Loop macro / pause");
-    Console::Info("  F12      = Stop playback");
-    Console::Info("  Num+/-   = Speed up/down");
-    Console::Info("  Num*     = Reset speed    Num/ = Freeze");
-    Console::Info("  Num0     = Toggle speed   Num1-7 = Presets");
-    Console::Info("  INSERT   = Save waypoint");
-    Console::Info("  HOME     = Teleport to selected waypoint");
-    Console::Info("  PgUp/Dn  = Select waypoint");
-    Console::Info("  DELETE   = Delete waypoint");
-    Console::Info("  Ctrl+N   = Toggle noclip");
-    Console::Info("  Ctrl+T   = Toggle smooth teleport");
-    Console::Info("  Ctrl+R   = Cycle radar mode (mini/full/list)");
-    Console::Info("  END      = Eject DLL");
+    Console::Info("  F1         = Toggle overlay");
+    Console::Info("  F2         = Toggle info panel");
+    Console::Info("  F3         = Toggle log monitor");
+    Console::Info("  F4         = Toggle FSCommand monitor");
+    Console::Info("  F5-F8      = Toggle speed/net/script/macro panels");
+    Console::Info("  Ctrl+1-9,0 = Toggle all %d panels by index", Suite::PANEL_COUNT);
+    Console::Info("  F9         = Start/stop macro recording");
+    Console::Info("  F10        = Play last macro");
+    Console::Info("  F11        = Loop macro / pause");
+    Console::Info("  F12        = Stop playback");
+    Console::Info("  Num+/-     = Speed up/down");
+    Console::Info("  Num*       = Reset speed    Num/ = Freeze");
+    Console::Info("  Num0       = Toggle speed   Num1-7 = Presets");
+    Console::Info("  INSERT     = Save waypoint");
+    Console::Info("  HOME       = Teleport to selected waypoint");
+    Console::Info("  PgUp/Dn    = Select waypoint");
+    Console::Info("  DELETE     = Delete waypoint");
+    Console::Info("  Ctrl+N     = Toggle noclip");
+    Console::Info("  Ctrl+T     = Toggle smooth teleport");
+    Console::Info("  Ctrl+R     = Cycle radar mode");
+    Console::Info("  Ctrl+Z/X   = Zoom in/out");
+    Console::Info("  Ctrl+F     = Toggle free camera");
+    Console::Info("  Ctrl+V     = Cycle camera presets");
+    Console::Info("  Ctrl+C     = Reset camera");
+    Console::Info("  Ctrl+Sh+A  = Toggle anti-AFK");
+    Console::Info("  END        = Eject DLL");
     Console::Separator();
-    Console::Success("Intelligence Suite v2 ACTIVE — %d modules loaded", Suite::PANEL_COUNT);
+    Console::Success("Intelligence Suite v3 ACTIVE — %d modules loaded", Suite::PANEL_COUNT);
 
     // Main loop
     while (g_running) {
