@@ -279,7 +279,8 @@ void MainThread(HMODULE hModule) {
     Console::Info("  F3         = Toggle log monitor");
     Console::Info("  F4         = Toggle FSCommand monitor");
     Console::Info("  F5-F8      = Toggle speed/net/script/macro panels");
-    Console::Info("  Ctrl+1-9,0 = Toggle all %d panels by index", Suite::PANEL_COUNT);
+    Console::Info("  Ctrl+1-0   = Toggle panels 1-10");
+    Console::Info("  Ctrl+Sh+1-6= Toggle panels 11-16");
     Console::Info("  F9         = Start/stop macro recording");
     Console::Info("  F10        = Play last macro");
     Console::Info("  F11        = Loop macro / pause");
@@ -299,9 +300,20 @@ void MainThread(HMODULE hModule) {
     Console::Info("  Ctrl+V     = Cycle camera presets");
     Console::Info("  Ctrl+C     = Reset camera");
     Console::Info("  Ctrl+Sh+A  = Toggle anti-AFK");
+    Console::Info("  --- EXPLOITATION ---");
+    Console::Info("  Ctrl+Q     = Teleport to quest objective");
+    Console::Info("  Ctrl+Sh+Q  = Toggle auto quest teleport");
+    Console::Info("  Ctrl+B     = Return to saved position");
+    Console::Info("  Ctrl+W     = Toggle wisp auto-collector");
+    Console::Info("  Ctrl+Sh+W  = Collect nearest wisp");
+    Console::Info("  Ctrl+G     = Toggle auto combat");
+    Console::Info("  Ctrl+Sh+G  = Cycle combat strategy");
+    Console::Info("  Ctrl+D     = Toggle auto dialogue skip");
+    Console::Info("  Ctrl+Sh+H  = Freeze/unfreeze health");
+    Console::Info("  Ctrl+Sh+M  = Freeze/unfreeze mana");
     Console::Info("  END        = Eject DLL");
     Console::Separator();
-    Console::Success("Intelligence Suite v3 ACTIVE — %d modules loaded", Suite::PANEL_COUNT);
+    Console::Success("Intelligence Suite v4 ACTIVE — %d modules loaded", Suite::PANEL_COUNT);
 
     // Main loop
     while (g_running) {

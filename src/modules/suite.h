@@ -13,6 +13,11 @@
 #include "anti_afk.h"
 #include "chat_logger.h"
 #include "config_system.h"
+#include "quest_teleport.h"
+#include "wisp_collector.h"
+#include "auto_combat.h"
+#include "auto_dialogue.h"
+#include "stat_scanner.h"
 #include "../overlay.h"
 #include "../console.h"
 
@@ -32,17 +37,24 @@ namespace W101Hook {
             PANEL_CAMERA,
             PANEL_ANTIAFK,
             PANEL_CHAT,
+            PANEL_QUEST_TP,
+            PANEL_WISP,
+            PANEL_COMBAT,
+            PANEL_DIALOGUE,
+            PANEL_STATS,
             PANEL_COUNT
         };
 
     private:
         static inline bool panelVisible[PANEL_COUNT] = {
-            true, true, true, true, true, false, true, true, true, true, true
+            true, true, true, true, true, false, true, true,
+            true, true, true, true, true, true, true, true
         };
         static inline bool suiteActive = false;
 
         static inline const char* panelNames[] = {
-            "SPD", "NET", "SCR", "MAC", "TP", "MEM", "EXE", "RAD", "CAM", "AFK", "CHT"
+            "SPD", "NET", "SCR", "MAC", "TP", "MEM", "EXE", "RAD",
+            "CAM", "AFK", "CHT", "QTP", "WSP", "CMB", "DLG", "STS"
         };
 
         static inline D3DCOLOR panelColors[] = {
@@ -57,13 +69,17 @@ namespace W101Hook {
             D3DCOLOR_ARGB(255, 100, 200, 255),    // sky blue - camera
             D3DCOLOR_ARGB(255, 200, 200, 60),     // lime - anti-afk
             D3DCOLOR_ARGB(255, 200, 160, 255),    // lavender - chat
+            D3DCOLOR_ARGB(255, 255, 255, 100),    // yellow - quest tp
+            D3DCOLOR_ARGB(255, 60,  255, 180),    // aqua - wisp
+            D3DCOLOR_ARGB(255, 255, 80,  80),     // crimson - combat
+            D3DCOLOR_ARGB(255, 200, 200, 60),     // lime - dialogue
+            D3DCOLOR_ARGB(255, 100, 200, 255),    // azure - stats
         };
 
     public:
         static bool Init() {
-            Console::Info("Initializing Intelligence Suite v3...");
+            Console::Info("Initializing Intelligence Suite v4...");
 
-            // Config system — load first so other modules can read settings
             if (ConfigSystem::Init()) {
                 Console::Success("ConfigSystem: %s (%d entries)",
                     ConfigSystem::GetPath().c_str(), ConfigSystem::GetEntryCount());
@@ -122,6 +138,31 @@ namespace W101Hook {
                 }
             }
 
+            // v4 exploitation modules
+            if (QuestTeleport::Init()) {
+                Console::Success("QuestTeleport: quest arrow tracking active (Ctrl+Q)");
+            } else {
+                Console::Warn("QuestTeleport: matrix functions not resolved");
+            }
+
+            if (WispCollector::Init()) {
+                Console::Success("WispCollector: entity wisp scanning active (Ctrl+W)");
+            } else {
+                Console::Warn("WispCollector: sprite functions not resolved");
+            }
+
+            if (AutoCombat::Init()) {
+                Console::Success("AutoCombat: turn-based automation ready (Ctrl+G)");
+            }
+
+            if (AutoDialogue::Init()) {
+                Console::Success("AutoDialogue: NPC skip ready (Ctrl+D)");
+            }
+
+            if (StatScanner::Init()) {
+                Console::Success("StatScanner: HP/MP/Gold/Pip tracking active");
+            }
+
             // Load panel visibility from config
             for (int i = 0; i < PANEL_COUNT; i++) {
                 char key[32];
@@ -132,12 +173,11 @@ namespace W101Hook {
             }
 
             suiteActive = true;
-            Console::Success("Intelligence Suite v3: ALL %d MODULES LOADED", PANEL_COUNT);
+            Console::Success("Intelligence Suite v4: ALL %d MODULES LOADED", PANEL_COUNT);
             return true;
         }
 
         static void Shutdown() {
-            // Save panel state to config
             for (int i = 0; i < PANEL_COUNT; i++) {
                 char key[32];
                 snprintf(key, sizeof(key), "panel_%d", i);
@@ -153,7 +193,12 @@ namespace W101Hook {
             CameraControl::Shutdown();
             AntiAFK::Shutdown();
             ChatLogger::Shutdown();
-            ConfigSystem::Shutdown(); // saves config last
+            QuestTeleport::Shutdown();
+            WispCollector::Shutdown();
+            AutoCombat::Shutdown();
+            AutoDialogue::Shutdown();
+            StatScanner::Shutdown();
+            ConfigSystem::Shutdown();
 
             if (MacroEngine::IsPlaying()) MacroEngine::StopPlayback();
             if (MacroEngine::IsRecording()) MacroEngine::StopRecording();
@@ -171,23 +216,38 @@ namespace W101Hook {
             EntityRadar::Update(r, dt);
             CameraControl::Update(r, dt);
             AntiAFK::Update(dt);
+            QuestTeleport::Update(r, dt);
+            WispCollector::Update(r, dt);
+            AutoCombat::Update(dt);
+            AutoDialogue::Update(dt);
+            StatScanner::Update(dt);
             return SpeedControl::ProcessDt(dt);
         }
 
         static bool ProcessKey(unsigned short key, bool down, root* r) {
-            // Ctrl+1-9,0 toggle panels
-            if (down && (GetAsyncKeyState(VK_CONTROL) & 0x8000) &&
-                !(GetAsyncKeyState(VK_SHIFT) & 0x8000)) {
-                if (key >= '1' && key <= '9') {
+            // Ctrl+1-9,0 toggle panels (0 = panel index 9)
+            // Ctrl+Shift+1-6 toggle panels 10-15
+            if (down && (GetAsyncKeyState(VK_CONTROL) & 0x8000)) {
+                bool shift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+
+                if (!shift && key >= '1' && key <= '9') {
                     int panel = key - '1';
                     if (panel < PANEL_COUNT) {
                         panelVisible[panel] = !panelVisible[panel];
                         return false;
                     }
                 }
-                if (key == '0' && PANEL_COUNT > 9) {
+                if (!shift && key == '0' && PANEL_COUNT > 9) {
                     panelVisible[9] = !panelVisible[9];
                     return false;
+                }
+                // Ctrl+Shift+1-6 for panels 10-15
+                if (shift && key >= '1' && key <= '6') {
+                    int panel = 10 + (key - '1');
+                    if (panel < PANEL_COUNT) {
+                        panelVisible[panel] = !panelVisible[panel];
+                        return false;
+                    }
                 }
             }
 
@@ -206,6 +266,11 @@ namespace W101Hook {
             if (!Teleporter::HandleKey(key, down, r)) return false;
             if (!CameraControl::HandleKey(key, down)) return false;
             if (!AntiAFK::HandleKey(key, down)) return false;
+            if (!QuestTeleport::HandleKey(key, down, r)) return false;
+            if (!WispCollector::HandleKey(key, down, r)) return false;
+            if (!AutoCombat::HandleKey(key, down)) return false;
+            if (!AutoDialogue::HandleKey(key, down)) return false;
+            if (!StatScanner::HandleKey(key, down)) return false;
 
             // Radar mode cycling: Ctrl+R
             if (down && key == 'R' && (GetAsyncKeyState(VK_CONTROL) & 0x8000)) {
@@ -213,15 +278,12 @@ namespace W101Hook {
                 return false;
             }
 
-            // Record input for macro
             if (MacroEngine::IsRecording()) {
                 if (down) MacroEngine::RecordKeyDown(key);
                 else MacroEngine::RecordKeyUp(key);
             }
 
-            // Reset anti-afk timer on real input
             AntiAFK::OnRealInput();
-
             return true;
         }
 
@@ -238,6 +300,10 @@ namespace W101Hook {
         static void ProcessFSCommand(const std::string& cmd, const std::string& args) {
             ScriptMonitor::ProcessFSCommand(cmd, args);
             ChatLogger::ProcessFSCommand(cmd, args);
+            QuestTeleport::ProcessFSCommand(cmd, args);
+            AutoCombat::ProcessFSCommand(cmd, args);
+            AutoDialogue::ProcessFSCommand(cmd, args);
+            StatScanner::ProcessFSCommand(cmd, args);
         }
 
         static void ProcessLogMessage(const std::string& msg, bool isError) {
@@ -253,34 +319,45 @@ namespace W101Hook {
             int y = startY;
 
             // Suite header
-            Overlay::DrawFilledRect(dev, x, y, 530, 20, Overlay::BgDark);
+            Overlay::DrawFilledRect(dev, x, y, 700, 20, Overlay::BgDark);
             Overlay::DrawText(x + 5, y + 3, Overlay::Cyan,
-                "W101 SUITE v3 | Ctrl+[1-9,0] panels | %d modules", PANEL_COUNT);
+                "W101 SUITE v4 | %d modules | Ctrl+[1-0] Ctrl+Sh+[1-6]", PANEL_COUNT);
             y += 24;
 
-            // Module status bar
-            Overlay::DrawFilledRect(dev, x, y, 530, 16, D3DCOLOR_ARGB(180, 20, 20, 30));
+            // Module status bar (two rows for 16 modules)
+            Overlay::DrawFilledRect(dev, x, y, 700, 30, D3DCOLOR_ARGB(180, 20, 20, 30));
             int statusX = x + 5;
-            for (int i = 0; i < PANEL_COUNT; i++) {
+            for (int i = 0; i < PANEL_COUNT && i < 11; i++) {
                 D3DCOLOR c = panelVisible[i] ? panelColors[i] : D3DCOLOR_ARGB(255, 80, 80, 80);
                 Overlay::DrawText(statusX, y + 2, c, "[%s]", panelNames[i]);
                 statusX += 42;
             }
-            y += 20;
+            statusX = x + 5;
+            for (int i = 11; i < PANEL_COUNT; i++) {
+                D3DCOLOR c = panelVisible[i] ? panelColors[i] : D3DCOLOR_ARGB(255, 80, 80, 80);
+                Overlay::DrawText(statusX, y + 16, c, "[%s]", panelNames[i]);
+                statusX += 42;
+            }
+            y += 34;
 
-            // Left column
+            // Left column: speed, network, scripts, macros, combat, dialogue
             int leftY = y;
             if (panelVisible[PANEL_SPEED])      leftY = RenderSpeedPanel(dev, x, leftY);
             if (panelVisible[PANEL_NETWORK])     leftY = RenderNetworkPanel(dev, x, leftY);
             if (panelVisible[PANEL_SCRIPTS])     leftY = RenderScriptPanel(dev, x, leftY);
             if (panelVisible[PANEL_MACROS])      leftY = RenderMacroPanel(dev, x, leftY);
+            if (panelVisible[PANEL_COMBAT])      leftY = AutoCombat::RenderPanel(dev, x, leftY);
+            if (panelVisible[PANEL_DIALOGUE])    leftY = AutoDialogue::RenderPanel(dev, x, leftY);
 
-            // Right column
+            // Right column: teleporter, camera, anti-afk, quest tp, wisp, stats, scanner, executor, radar, chat
             int rightX = x + 540;
             int rightY = startY;
             if (panelVisible[PANEL_TELEPORTER])  rightY = Teleporter::RenderPanel(dev, rightX, rightY);
             if (panelVisible[PANEL_CAMERA])      rightY = CameraControl::RenderPanel(dev, rightX, rightY);
             if (panelVisible[PANEL_ANTIAFK])     rightY = AntiAFK::RenderPanel(dev, rightX, rightY);
+            if (panelVisible[PANEL_QUEST_TP])    rightY = QuestTeleport::RenderPanel(dev, rightX, rightY);
+            if (panelVisible[PANEL_WISP])        rightY = WispCollector::RenderPanel(dev, rightX, rightY);
+            if (panelVisible[PANEL_STATS])       rightY = StatScanner::RenderPanel(dev, rightX, rightY);
             if (panelVisible[PANEL_SCANNER])     rightY = MemoryScanner::RenderPanel(dev, rightX, rightY);
             if (panelVisible[PANEL_EXECUTOR])    rightY = ScriptExecutor::RenderPanel(dev, rightX, rightY);
             if (panelVisible[PANEL_RADAR])       rightY = EntityRadar::RenderPanel(dev, rightX, rightY);
