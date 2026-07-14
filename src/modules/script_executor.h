@@ -202,56 +202,77 @@ namespace W101Hook {
             void* obj = static_cast<void*>(r);
             void* env = nullptr; // null env = use root environment
 
-            bool success = false;
-            std::string argStr;
+            struct CallResult {
+                bool success;
+                bool exception;
+                char argStr[256];
+            };
 
-            __try {
-                if (args.empty() && fnCallMethod0) {
-                    success = fnCallMethod0(method.c_str(), result, obj, env);
-                    argStr = "(no args)";
-                }
-                else if (args.size() == 1 && fnCallMethod1) {
-                    // Create as_value for arg
-                    uint8_t arg0Buf[64] = {};
-                    if (fnSetString) {
-                        fnSetString(arg0Buf, args[0].c_str());
+            auto doCall = [](const char* methodName, int argCount,
+                const char* arg0, const char* arg1,
+                void* result, void* obj, void* env,
+                auto fn0, auto fn1, auto fn2, auto fnSet) -> CallResult {
+                CallResult cr = { false, false, "" };
+                __try {
+                    if (argCount == 0 && fn0) {
+                        cr.success = fn0(methodName, result, obj, env);
+                        strncpy(cr.argStr, "(no args)", 255);
+                    } else if (argCount == 1 && fn1) {
+                        uint8_t a0[64] = {};
+                        if (fnSet) fnSet(a0, arg0);
+                        cr.success = fn1(methodName, result, obj, env, a0);
+                        strncpy(cr.argStr, arg0 ? arg0 : "", 255);
+                    } else if (argCount == 2 && fn2) {
+                        uint8_t a0[64] = {}, a1[64] = {};
+                        if (fnSet) { fnSet(a0, arg0); fnSet(a1, arg1); }
+                        cr.success = fn2(methodName, result, obj, env, a0, a1);
+                        snprintf(cr.argStr, 255, "%s, %s", arg0 ? arg0 : "", arg1 ? arg1 : "");
                     }
-                    success = fnCallMethod1(method.c_str(), result, obj, env, arg0Buf);
-                    argStr = args[0];
+                } __except(EXCEPTION_EXECUTE_HANDLER) {
+                    cr.exception = true;
                 }
-                else if (args.size() == 2 && fnCallMethod2) {
-                    uint8_t arg0Buf[64] = {};
-                    uint8_t arg1Buf[64] = {};
-                    if (fnSetString) {
-                        fnSetString(arg0Buf, args[0].c_str());
-                        fnSetString(arg1Buf, args[1].c_str());
-                    }
-                    success = fnCallMethod2(method.c_str(), result, obj, env, arg0Buf, arg1Buf);
-                    argStr = args[0] + ", " + args[1];
-                }
-                else {
-                    RecordResult(method, "too many args", false, "max 2 args supported");
-                    return;
-                }
-            }
-            __except (EXCEPTION_EXECUTE_HANDLER) {
-                RecordResult(method, argStr, false, "EXCEPTION");
+                return cr;
+            };
+
+            if ((int)args.size() > 2) {
+                RecordResult(method, "too many args", false, "max 2 args supported");
                 return;
             }
 
-            // Try to extract return value
-            std::string retStr = "void";
-            if (success && fnToString) {
-                __try {
-                    const char* s = fnToString(result);
-                    if (s) retStr = s;
-                }
-                __except (EXCEPTION_EXECUTE_HANDLER) {
-                    retStr = "<unreadable>";
-                }
+            const char* a0 = args.size() > 0 ? args[0].c_str() : nullptr;
+            const char* a1 = args.size() > 1 ? args[1].c_str() : nullptr;
+
+            auto cr = doCall(method.c_str(), (int)args.size(), a0, a1,
+                result, obj, env, fnCallMethod0, fnCallMethod1, fnCallMethod2, fnSetString);
+
+            if (cr.exception) {
+                RecordResult(method, cr.argStr, false, "EXCEPTION");
+                return;
             }
 
-            RecordResult(method, argStr, success, retStr);
+            std::string retStr = "void";
+            if (cr.success && fnToString) {
+                const char* s = SafeToString(result);
+                if (s) retStr = s;
+            }
+            RecordResult(method, cr.argStr, cr.success, retStr);
+        }
+
+        static const char* SafeToString(void* result) {
+            __try {
+                return fnToString(result);
+            } __except(EXCEPTION_EXECUTE_HANDLER) {
+                return nullptr;
+            }
+        }
+
+        static bool SafeGameLogMsg(const char* msg) {
+            __try {
+                Framework::GameLogMsg("%s", msg);
+                return true;
+            } __except(EXCEPTION_EXECUTE_HANDLER) {
+                return false;
+            }
         }
 
         static void ExecuteFSCommand(root* r, const std::string& cmd, const std::string& args) {
@@ -260,15 +281,11 @@ namespace W101Hook {
                 return;
             }
 
-            // Use the framework's FSCommand path — root has an fscommand handler
-            // The gameswf FSCommand goes through the interface handler
-            __try {
-                // Direct call through root — root::on_event or fscommand callback
-                // We use the registered fscommand callback mechanism
-                Framework::GameLogMsg("ScriptExecutor: FS %s(%s)", cmd.c_str(), args.c_str());
+            char buf[512];
+            snprintf(buf, sizeof(buf), "ScriptExecutor: FS %s(%s)", cmd.c_str(), args.c_str());
+            if (SafeGameLogMsg(buf)) {
                 RecordResult("FS:" + cmd, args, true, "dispatched");
-            }
-            __except (EXCEPTION_EXECUTE_HANDLER) {
+            } else {
                 RecordResult("FS:" + cmd, args, false, "EXCEPTION");
             }
         }

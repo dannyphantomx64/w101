@@ -89,6 +89,20 @@ namespace W101Hook {
             hook.active = false;
             return true;
         }
+
+        // Instance interface for per-module use
+        Hook m_hook = {};
+
+        uintptr_t Install(uintptr_t target, uintptr_t detour) {
+            m_hook.target = target;
+            m_hook.detour = detour;
+            if (!Install(m_hook)) return 0;
+            return m_hook.trampoline;
+        }
+
+        bool Remove() {
+            return Remove(m_hook);
+        }
     };
 
     // ========================================================================

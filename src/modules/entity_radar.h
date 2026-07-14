@@ -91,79 +91,94 @@ namespace W101Hook {
             return h;
         }
 
-        static void ScanSprite(void* sprite, int depth, std::vector<Entity>& found) {
-            if (!sprite || depth <= 0) return;
-            if (static_cast<int>(found.size()) >= maxEntities) return;
+        struct RawEntityData {
+            uintptr_t ptr;
+            float x, y, scaleX, scaleY, rotation;
+            char  name[128];
+            int   frameCount, currentFrame;
+            bool  visible;
+            bool  valid;
+        };
 
-            // Try to read entity data
+        static RawEntityData SafeReadEntity(void* sprite) {
+            RawEntityData d = {};
             __try {
-                Entity ent = {};
-                ent.ptr = reinterpret_cast<uintptr_t>(sprite);
-
-                // Get world matrix for position
+                d.ptr = reinterpret_cast<uintptr_t>(sprite);
                 if (fnGetWorldMatrix) {
                     void* matrix = fnGetWorldMatrix(sprite);
                     if (matrix) {
                         auto* m = reinterpret_cast<SWFMatrix*>(matrix);
-                        ent.x = m->tx;
-                        ent.y = m->ty;
-                        ent.scaleX = sqrtf(m->a * m->a + m->b * m->b);
-                        ent.scaleY = sqrtf(m->c * m->c + m->d * m->d);
-                        ent.rotation = atan2f(m->b, m->a) * 57.2957795f;
+                        d.x = m->tx; d.y = m->ty;
+                        d.scaleX = sqrtf(m->a * m->a + m->b * m->b);
+                        d.scaleY = sqrtf(m->c * m->c + m->d * m->d);
+                        d.rotation = atan2f(m->b, m->a) * 57.2957795f;
                     }
                 }
-
-                // Get name
                 if (fnGetName) {
-                    const char* name = fnGetName(sprite);
-                    if (name && name[0] != '\0') {
-                        ent.name = name;
-                    }
+                    const char* n = fnGetName(sprite);
+                    if (n && n[0]) { strncpy(d.name, n, 127); d.name[127] = '\0'; }
                 }
-
-                // Get frame info
-                if (fnGetFrameCount) ent.frameCount = fnGetFrameCount(sprite);
-                if (fnGetCurrentFrame) ent.currentFrame = fnGetCurrentFrame(sprite);
-
-                // Visibility
-                if (fnGetVisible) ent.visible = fnGetVisible(sprite);
-                else ent.visible = true;
-
-                ent.depth = depth;
-                ent.hash = HashEntity(sprite, ent.x, ent.y);
-
-                // Apply filters
-                bool pass = true;
-                if (filterVisible && !ent.visible) pass = false;
-                if (filterNamed && ent.name.empty()) pass = false;
-                if (!filterName.empty() && ent.name.find(filterName) == std::string::npos) pass = false;
-
-                if (filterMaxDist > 0.0f) {
-                    float dx = ent.x - playerX;
-                    float dy = ent.y - playerY;
-                    float dist = sqrtf(dx * dx + dy * dy);
-                    if (dist > filterMaxDist) pass = false;
-                    if (dist < filterMinDist) pass = false;
-                }
-
-                if (pass) found.push_back(ent);
-
-                // Recurse into children
-                if (fnGetCharCount && fnGetCharAt) {
-                    int childCount = fnGetCharCount(sprite);
-                    childCount = std::min(childCount, 200); // sanity cap
-
-                    for (int i = 0; i < childCount; i++) {
-                        void* child = fnGetCharAt(sprite, i);
-                        if (child && child != sprite) {
-                            ScanSprite(child, depth - 1, found);
-                            if (static_cast<int>(found.size()) >= maxEntities) break;
-                        }
-                    }
-                }
+                if (fnGetFrameCount) d.frameCount = fnGetFrameCount(sprite);
+                if (fnGetCurrentFrame) d.currentFrame = fnGetCurrentFrame(sprite);
+                d.visible = fnGetVisible ? fnGetVisible(sprite) : true;
+                d.valid = true;
+            } __except(EXCEPTION_EXECUTE_HANDLER) {
+                d.valid = false;
             }
-            __except (EXCEPTION_EXECUTE_HANDLER) {
-                // bad pointer, skip
+            return d;
+        }
+
+        static int SafeChildCount(void* sprite) {
+            __try { return fnGetCharCount(sprite); }
+            __except(EXCEPTION_EXECUTE_HANDLER) { return 0; }
+        }
+
+        static void* SafeChildAt(void* sprite, int i) {
+            __try { return fnGetCharAt(sprite, i); }
+            __except(EXCEPTION_EXECUTE_HANDLER) { return nullptr; }
+        }
+
+        static void ScanSprite(void* sprite, int depth, std::vector<Entity>& found) {
+            if (!sprite || depth <= 0) return;
+            if (static_cast<int>(found.size()) >= maxEntities) return;
+
+            RawEntityData d = SafeReadEntity(sprite);
+            if (!d.valid) return;
+
+            Entity ent = {};
+            ent.ptr = d.ptr;
+            ent.x = d.x; ent.y = d.y;
+            ent.scaleX = d.scaleX; ent.scaleY = d.scaleY;
+            ent.rotation = d.rotation;
+            if (d.name[0]) ent.name = d.name;
+            ent.frameCount = d.frameCount;
+            ent.currentFrame = d.currentFrame;
+            ent.visible = d.visible;
+            ent.depth = depth;
+            ent.hash = HashEntity(sprite, ent.x, ent.y);
+
+            bool pass = true;
+            if (filterVisible && !ent.visible) pass = false;
+            if (filterNamed && ent.name.empty()) pass = false;
+            if (!filterName.empty() && ent.name.find(filterName) == std::string::npos) pass = false;
+            if (filterMaxDist > 0.0f) {
+                float dx = ent.x - playerX;
+                float dy = ent.y - playerY;
+                float dist = sqrtf(dx * dx + dy * dy);
+                if (dist > filterMaxDist || dist < filterMinDist) pass = false;
+            }
+            if (pass) found.push_back(ent);
+
+            if (fnGetCharCount && fnGetCharAt) {
+                int childCount = SafeChildCount(sprite);
+                childCount = std::min(childCount, 200);
+                for (int i = 0; i < childCount; i++) {
+                    void* child = SafeChildAt(sprite, i);
+                    if (child && child != sprite) {
+                        ScanSprite(child, depth - 1, found);
+                        if (static_cast<int>(found.size()) >= maxEntities) break;
+                    }
+                }
             }
         }
 

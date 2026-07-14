@@ -74,6 +74,7 @@ namespace W101 {
         constexpr uintptr_t SetBackgroundAlpha       = 0x141871BA0;
         constexpr uintptr_t GetCurrentFrame          = 0x141871AE0;
         constexpr uintptr_t GetFrameCount            = 0x140490E60;
+        constexpr uintptr_t GetTotalFrames           = GetFrameCount;
         constexpr uintptr_t GetRootMovie             = 0x141871740;
     }
 
@@ -86,6 +87,12 @@ namespace W101 {
         constexpr uintptr_t GotoLabeledFrame         = 0x141956B70;
         constexpr uintptr_t SetPlayState             = 0x141955790;
         constexpr uintptr_t GetRootMovie             = 0x1418731A0;
+        // character base class virtual methods (inherited by sprite_instance)
+        constexpr uintptr_t GetWorldMatrix           = 0x141873270;
+        constexpr uintptr_t SetMatrix                = 0x1418732E0;
+        constexpr uintptr_t GetCharacterCount        = 0x141873310;
+        constexpr uintptr_t GetCharacterAtDepth       = 0x141873340;
+        constexpr uintptr_t GetName                  = 0x141873380;
     }
 
     // ========================================================================
@@ -158,6 +165,7 @@ namespace W101 {
         constexpr uintptr_t SetUndefined             = 0x140490FC0;
         constexpr uintptr_t SetNaN                   = 0x140490FA0;
         constexpr uintptr_t ToStringPtr              = 0x14186E470;
+        constexpr uintptr_t ToString                 = ToStringPtr;
         constexpr uintptr_t ToTuString               = 0x14186E490;
         constexpr uintptr_t ToNumber                 = 0x14186E840;
         constexpr uintptr_t ToBool                   = 0x14186EA60;
@@ -205,6 +213,11 @@ namespace W101 {
         constexpr uintptr_t ByFunction               = 0x1419204F0;
         constexpr uintptr_t ByString                 = 0x14191FF90;
         constexpr uintptr_t Parsed                   = 0x14191F8C0;
+        // aliases used by modules
+        constexpr uintptr_t CallMethod               = ByValue;
+        constexpr uintptr_t CallMethod0Arg           = ByValue;
+        constexpr uintptr_t CallMethod1Arg           = ByString;
+        constexpr uintptr_t CallMethod2Arg           = ByFunction;
     }
 
     // ========================================================================

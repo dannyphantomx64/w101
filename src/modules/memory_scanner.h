@@ -83,6 +83,75 @@ namespace W101Hook {
             return true;
         }
 
+        static bool SafeReadMem(uintptr_t addr, void* buf, size_t sz) {
+            __try {
+                memcpy(buf, reinterpret_cast<const void*>(addr), sz);
+                return true;
+            } __except(EXCEPTION_EXECUTE_HANDLER) {
+                return false;
+            }
+        }
+
+        static bool SafePatternMatchRegion(uintptr_t regionStart, size_t regionLen,
+            const uint8_t* pattern, const uint8_t* mask, int patLen,
+            uintptr_t* outAddrs, int maxOut, int* outCount, size_t* outBytes) {
+            *outCount = 0;
+            *outBytes = 0;
+            __try {
+                const uint8_t* mem = reinterpret_cast<const uint8_t*>(regionStart);
+                size_t scanLen = regionLen - patLen;
+                *outBytes = scanLen;
+                for (size_t i = 0; i <= scanLen && *outCount < maxOut; i++) {
+                    if (PatternMatch(mem + i, pattern, mask, patLen)) {
+                        outAddrs[*outCount] = regionStart + i;
+                        (*outCount)++;
+                    }
+                }
+                return true;
+            } __except(EXCEPTION_EXECUTE_HANDLER) {
+                return false;
+            }
+        }
+
+        static bool SafeValueMatchRegion(uintptr_t regionStart, size_t regionLen,
+            uint64_t value, int valSize,
+            uintptr_t* outAddrs, int maxOut, int* outCount, size_t* outBytes) {
+            *outCount = 0;
+            *outBytes = 0;
+            __try {
+                const uint8_t* mem = reinterpret_cast<const uint8_t*>(regionStart);
+                size_t scanLen = regionLen - valSize;
+                *outBytes = scanLen;
+                for (size_t i = 0; i <= scanLen && *outCount < maxOut; i += valSize) {
+                    bool match = false;
+                    switch (valSize) {
+                        case 1: match = (mem[i] == static_cast<uint8_t>(value)); break;
+                        case 2: match = (*reinterpret_cast<const uint16_t*>(mem + i) == static_cast<uint16_t>(value)); break;
+                        case 4: match = (*reinterpret_cast<const uint32_t*>(mem + i) == static_cast<uint32_t>(value)); break;
+                        case 8: match = (*reinterpret_cast<const uint64_t*>(mem + i) == value); break;
+                    }
+                    if (match) { outAddrs[*outCount] = regionStart + i; (*outCount)++; }
+                }
+                return true;
+            } __except(EXCEPTION_EXECUTE_HANDLER) {
+                return false;
+            }
+        }
+
+        static bool SafeReadValue(uintptr_t addr, int valSize, uint64_t expected) {
+            __try {
+                switch (valSize) {
+                    case 1: return *reinterpret_cast<uint8_t*>(addr) == static_cast<uint8_t>(expected);
+                    case 2: return *reinterpret_cast<uint16_t*>(addr) == static_cast<uint16_t>(expected);
+                    case 4: return *reinterpret_cast<uint32_t*>(addr) == static_cast<uint32_t>(expected);
+                    case 8: return *reinterpret_cast<uint64_t*>(addr) == expected;
+                }
+                return false;
+            } __except(EXCEPTION_EXECUTE_HANDLER) {
+                return false;
+            }
+        }
+
     public:
         static bool Init() {
             active = true;
@@ -160,6 +229,9 @@ namespace W101Hook {
             size_t bytesScanned = 0;
             int patLen = static_cast<int>(pattern.size());
 
+            static constexpr int MAX_REGION_HITS = 512;
+            uintptr_t hitAddrs[MAX_REGION_HITS];
+
             for (auto& region : regions) {
                 if (region.base < rangeStart) continue;
                 if (region.base >= rangeEnd) break;
@@ -169,27 +241,27 @@ namespace W101Hook {
 
                 if (scanEnd - scanStart < static_cast<size_t>(patLen)) continue;
 
-                __try {
-                    const uint8_t* mem = reinterpret_cast<const uint8_t*>(scanStart);
-                    size_t scanLen = scanEnd - scanStart - patLen;
-                    bytesScanned += scanLen;
+                int hitCount = 0;
+                size_t regionBytes = 0;
+                int wantHits = std::min(MAX_REGION_HITS, maxResults - static_cast<int>(found.size()));
+                if (wantHits <= 0) goto done;
 
-                    for (size_t i = 0; i <= scanLen; i++) {
-                        if (PatternMatch(mem + i, pattern.data(), mask.data(), patLen)) {
-                            ScanResult res;
-                            res.address = scanStart + i;
-                            res.matchLen = patLen;
-                            res.label = label.empty() ? patternStr : label;
-                            int copyLen = std::min(64, patLen);
-                            memcpy(res.bytes, mem + i, copyLen);
-                            found.push_back(res);
+                SafePatternMatchRegion(scanStart, scanEnd - scanStart,
+                    pattern.data(), mask.data(), patLen,
+                    hitAddrs, wantHits, &hitCount, &regionBytes);
 
-                            if (static_cast<int>(found.size()) >= maxResults) goto done;
-                        }
-                    }
-                }
-                __except (EXCEPTION_EXECUTE_HANDLER) {
-                    continue;
+                bytesScanned += regionBytes;
+
+                for (int h = 0; h < hitCount; h++) {
+                    ScanResult res;
+                    res.address = hitAddrs[h];
+                    res.matchLen = patLen;
+                    res.label = label.empty() ? patternStr : label;
+                    int copyLen = std::min(64, patLen);
+                    SafeReadMem(hitAddrs[h], res.bytes, copyLen);
+                    found.push_back(res);
+
+                    if (static_cast<int>(found.size()) >= maxResults) goto done;
                 }
             }
 
@@ -236,6 +308,9 @@ namespace W101Hook {
             valueScanAddresses.clear();
             size_t bytesScanned = 0;
 
+            static constexpr int MAX_VAL_REGION_HITS = 4096;
+            uintptr_t valHitAddrs[MAX_VAL_REGION_HITS];
+
             for (auto& region : regions) {
                 if (region.base < rangeStart) continue;
                 if (region.base >= rangeEnd) break;
@@ -244,27 +319,20 @@ namespace W101Hook {
                 uintptr_t scanEnd = std::min(region.base + region.size, rangeEnd);
                 if (scanEnd - scanStart < static_cast<size_t>(size)) continue;
 
-                __try {
-                    const uint8_t* mem = reinterpret_cast<const uint8_t*>(scanStart);
-                    size_t scanLen = scanEnd - scanStart - size;
-                    bytesScanned += scanLen;
+                int hitCount = 0;
+                size_t regionBytes = 0;
+                int wantHits = std::min(MAX_VAL_REGION_HITS,
+                    static_cast<int>(500000 - valueScanAddresses.size()));
+                if (wantHits <= 0) goto vdone;
 
-                    for (size_t i = 0; i <= scanLen; i += static_cast<size_t>(size)) {
-                        bool match = false;
-                        switch (size) {
-                            case 1: match = (mem[i] == static_cast<uint8_t>(value)); break;
-                            case 2: match = (*reinterpret_cast<const uint16_t*>(mem + i) == static_cast<uint16_t>(value)); break;
-                            case 4: match = (*reinterpret_cast<const uint32_t*>(mem + i) == static_cast<uint32_t>(value)); break;
-                            case 8: match = (*reinterpret_cast<const uint64_t*>(mem + i) == value); break;
-                        }
-                        if (match) {
-                            valueScanAddresses.push_back(scanStart + i);
-                            if (valueScanAddresses.size() > 500000) goto vdone;
-                        }
-                    }
-                }
-                __except (EXCEPTION_EXECUTE_HANDLER) {
-                    continue;
+                SafeValueMatchRegion(scanStart, scanEnd - scanStart,
+                    value, size, valHitAddrs, wantHits, &hitCount, &regionBytes);
+
+                bytesScanned += regionBytes;
+
+                for (int h = 0; h < hitCount; h++) {
+                    valueScanAddresses.push_back(valHitAddrs[h]);
+                    if (valueScanAddresses.size() > 500000) goto vdone;
                 }
             }
 
@@ -287,18 +355,8 @@ namespace W101Hook {
             std::vector<uintptr_t> narrowed;
 
             for (auto addr : valueScanAddresses) {
-                __try {
-                    bool match = false;
-                    switch (valueScanSize) {
-                        case 1: match = (*reinterpret_cast<uint8_t*>(addr) == static_cast<uint8_t>(newValue)); break;
-                        case 2: match = (*reinterpret_cast<uint16_t*>(addr) == static_cast<uint16_t>(newValue)); break;
-                        case 4: match = (*reinterpret_cast<uint32_t*>(addr) == static_cast<uint32_t>(newValue)); break;
-                        case 8: match = (*reinterpret_cast<uint64_t*>(addr) == newValue); break;
-                    }
-                    if (match) narrowed.push_back(addr);
-                }
-                __except (EXCEPTION_EXECUTE_HANDLER) {
-                    continue;
+                if (SafeReadValue(addr, valueScanSize, newValue)) {
+                    narrowed.push_back(addr);
                 }
             }
 
@@ -306,7 +364,6 @@ namespace W101Hook {
             valueScanCount = static_cast<int>(valueScanAddresses.size());
             lastScanTime = GetTickCount() - startTick;
 
-            // Convert to results for display
             {
                 std::lock_guard<std::mutex> lock(scanMtx);
                 results.clear();
@@ -316,11 +373,8 @@ namespace W101Hook {
                     res.address = valueScanAddresses[i];
                     res.matchLen = valueScanSize;
                     res.label = "value_scan";
-                    __try {
-                        memcpy(res.bytes, reinterpret_cast<void*>(res.address),
-                            std::min(64, valueScanSize + 16));
-                    }
-                    __except (EXCEPTION_EXECUTE_HANDLER) {
+                    int readLen = std::min(64, valueScanSize + 16);
+                    if (!SafeReadMem(res.address, res.bytes, readLen)) {
                         memset(res.bytes, 0, 64);
                     }
                     results.push_back(res);

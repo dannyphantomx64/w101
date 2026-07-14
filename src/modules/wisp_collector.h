@@ -80,91 +80,99 @@ namespace W101Hook {
             return true;
         }
 
+        static const char* SafeGetName(void* sprite) {
+            __try {
+                return fnGetName(sprite);
+            } __except(EXCEPTION_EXECUTE_HANDLER) {
+                return nullptr;
+            }
+        }
+
         static WispType ClassifyWisp(void* sprite) {
             if (!fnGetName || !sprite) return WISP_UNKNOWN;
 
-            __try {
-                const char* name = fnGetName(sprite);
-                if (!name) return WISP_UNKNOWN;
+            const char* rawName = SafeGetName(sprite);
+            if (!rawName) return WISP_UNKNOWN;
 
-                std::string n(name);
-                std::transform(n.begin(), n.end(), n.begin(), ::tolower);
+            char lower[128];
+            int i = 0;
+            for (; rawName[i] && i < 126; i++)
+                lower[i] = (char)tolower((unsigned char)rawName[i]);
+            lower[i] = '\0';
 
-                if (n.find("health") != std::string::npos ||
-                    n.find("wisph")  != std::string::npos ||
-                    n.find("redwis") != std::string::npos ||
-                    n.find("hp")     != std::string::npos)
-                    return WISP_HEALTH;
+            if (strstr(lower, "health") || strstr(lower, "wisph") ||
+                strstr(lower, "redwis") || strstr(lower, "hp"))
+                return WISP_HEALTH;
 
-                if (n.find("mana")    != std::string::npos ||
-                    n.find("wispm")   != std::string::npos ||
-                    n.find("bluewis") != std::string::npos ||
-                    n.find("mp")      != std::string::npos)
-                    return WISP_MANA;
+            if (strstr(lower, "mana") || strstr(lower, "wispm") ||
+                strstr(lower, "bluewis") || strstr(lower, "mp"))
+                return WISP_MANA;
 
-                if (n.find("gold")    != std::string::npos ||
-                    n.find("coin")    != std::string::npos ||
-                    n.find("goldwis") != std::string::npos)
-                    return WISP_GOLD;
+            if (strstr(lower, "gold") || strstr(lower, "coin") ||
+                strstr(lower, "goldwis"))
+                return WISP_GOLD;
 
-                // Generic wisp detection by animation/visual patterns
-                if (n.find("wisp") != std::string::npos ||
-                    n.find("pickup") != std::string::npos ||
-                    n.find("orb") != std::string::npos ||
-                    n.find("collectible") != std::string::npos)
-                    return WISP_HEALTH; // default to health if unspecified
+            if (strstr(lower, "wisp") || strstr(lower, "pickup") ||
+                strstr(lower, "orb") || strstr(lower, "collectible"))
+                return WISP_HEALTH;
 
-            } __except(EXCEPTION_EXECUTE_HANDLER) {
-                return WISP_UNKNOWN;
-            }
             return WISP_UNKNOWN;
+        }
+
+        static int SafeGetChildCount(void* sprite) {
+            __try {
+                return fnGetCharCount(sprite);
+            } __except(EXCEPTION_EXECUTE_HANDLER) {
+                return 0;
+            }
+        }
+
+        static void* SafeGetChild(void* sprite, int idx) {
+            __try {
+                return fnGetCharAtDepth(sprite, idx);
+            } __except(EXCEPTION_EXECUTE_HANDLER) {
+                return nullptr;
+            }
         }
 
         static void ScanEntities(root* r, void* sprite, int depth) {
             if (!sprite || depth > 4) return;
 
-            __try {
-                // Check if this entity is a wisp
-                WispType type = ClassifyWisp(sprite);
-                if (type != WISP_UNKNOWN) {
-                    float sx = 0, sy = 0;
-                    if (ReadPos(sprite, sx, sy)) {
-                        float dx = sx - playerX;
-                        float dy = sy - playerY;
-                        float dist = sqrtf(dx * dx + dy * dy);
+            WispType type = ClassifyWisp(sprite);
+            if (type != WISP_UNKNOWN) {
+                float sx = 0, sy = 0;
+                if (ReadPos(sprite, sx, sy)) {
+                    float dx = sx - playerX;
+                    float dy = sy - playerY;
+                    float dist = sqrtf(dx * dx + dy * dy);
 
-                        if (dist < collectRadius) {
-                            // Check if already tracked
-                            bool found = false;
-                            for (auto& w : wisps) {
-                                if (w.sprite == sprite) {
-                                    w.x = sx;
-                                    w.y = sy;
-                                    w.distance = dist;
-                                    w.lastSeen = GetTickCount();
-                                    found = true;
-                                    break;
-                                }
+                    if (dist < collectRadius) {
+                        bool found = false;
+                        for (auto& w : wisps) {
+                            if (w.sprite == sprite) {
+                                w.x = sx;
+                                w.y = sy;
+                                w.distance = dist;
+                                w.lastSeen = GetTickCount();
+                                found = true;
+                                break;
                             }
-                            if (!found) {
-                                wisps.push_back({sprite, sx, sy, dist, type, false, GetTickCount()});
-                            }
+                        }
+                        if (!found) {
+                            wisps.push_back({sprite, sx, sy, dist, type, false, GetTickCount()});
                         }
                     }
                 }
+            }
 
-                // Recurse into children
-                if (fnGetCharCount && fnGetCharAtDepth) {
-                    int count = fnGetCharCount(sprite);
-                    for (int i = 0; i < count && i < 200; i++) {
-                        void* child = fnGetCharAtDepth(sprite, i);
-                        if (child && child != sprite) {
-                            ScanEntities(r, child, depth + 1);
-                        }
+            if (fnGetCharCount && fnGetCharAtDepth) {
+                int count = SafeGetChildCount(sprite);
+                for (int i = 0; i < count && i < 200; i++) {
+                    void* child = SafeGetChild(sprite, i);
+                    if (child && child != sprite) {
+                        ScanEntities(r, child, depth + 1);
                     }
                 }
-            } __except(EXCEPTION_EXECUTE_HANDLER) {
-                return;
             }
         }
 
