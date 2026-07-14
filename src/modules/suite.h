@@ -5,6 +5,10 @@
 #include "packet_sniffer.h"
 #include "script_monitor.h"
 #include "macro_engine.h"
+#include "teleporter.h"
+#include "memory_scanner.h"
+#include "script_executor.h"
+#include "entity_radar.h"
 #include "../overlay.h"
 #include "../console.h"
 
@@ -17,54 +21,89 @@ namespace W101Hook {
             PANEL_NETWORK,
             PANEL_SCRIPTS,
             PANEL_MACROS,
+            PANEL_TELEPORTER,
+            PANEL_SCANNER,
+            PANEL_EXECUTOR,
+            PANEL_RADAR,
             PANEL_COUNT
         };
 
     private:
-        static inline bool panelVisible[PANEL_COUNT] = { true, true, true, true };
+        static inline bool panelVisible[PANEL_COUNT] = {
+            true, true, true, true, true, false, true, true
+        };
         static inline bool suiteActive = false;
-        static inline int  activeTab = 0;
 
         static inline const char* panelNames[] = {
-            "SPEED", "NETWORK", "SCRIPTS", "MACROS"
+            "SPD", "NET", "SCR", "MAC", "TP", "MEM", "EXE", "RAD"
         };
 
         static inline D3DCOLOR panelColors[] = {
-            D3DCOLOR_ARGB(255, 255, 165, 0),    // orange for speed
-            D3DCOLOR_ARGB(255, 60,  200, 255),   // blue for network
-            D3DCOLOR_ARGB(255, 255, 60,  255),   // magenta for scripts
-            D3DCOLOR_ARGB(255, 60,  255, 60),    // green for macros
+            D3DCOLOR_ARGB(255, 255, 165, 0),     // orange - speed
+            D3DCOLOR_ARGB(255, 60,  200, 255),    // blue - network
+            D3DCOLOR_ARGB(255, 255, 60,  255),    // magenta - scripts
+            D3DCOLOR_ARGB(255, 60,  255, 60),     // green - macros
+            D3DCOLOR_ARGB(255, 255, 215, 0),      // gold - teleporter
+            D3DCOLOR_ARGB(255, 255, 100, 100),    // red - scanner
+            D3DCOLOR_ARGB(255, 180, 120, 255),    // purple - executor
+            D3DCOLOR_ARGB(255, 100, 255, 200),    // teal - radar
         };
 
     public:
         static bool Init() {
-            Console::Info("Initializing Intelligence Suite...");
+            Console::Info("Initializing Intelligence Suite v2...");
 
-            // Speed control needs no init — it's pure dt manipulation
+            // Speed control — no init needed
+            Console::Success("SpeedControl: ready (Num+/- speed, Num/ freeze)");
 
             if (PacketSniffer::Init()) {
                 Console::Success("PacketSniffer: IAT hooks on WinSock active");
             } else {
-                Console::Warn("PacketSniffer: IAT hooks failed (no WinSock imports?)");
+                Console::Warn("PacketSniffer: IAT hooks failed");
             }
 
             if (ScriptMonitor::Init()) {
                 Console::Success("ScriptMonitor: call_method trampolined");
             } else {
-                Console::Warn("ScriptMonitor: call_method hook failed");
+                Console::Warn("ScriptMonitor: trampoline failed");
             }
 
-            // MacroEngine doesn't need init — it starts in IDLE state
             Console::Success("MacroEngine: ready (F9=rec F10=play F11=loop F12=stop)");
 
+            if (Teleporter::Init()) {
+                Console::Success("Teleporter: matrix read/write active (INS=save HOME=go Ctrl+N=noclip)");
+            } else {
+                Console::Warn("Teleporter: sprite matrix functions not resolved");
+            }
+
+            if (MemoryScanner::Init()) {
+                Console::Success("MemoryScanner: AOB + value scan ready");
+            }
+
+            if (ScriptExecutor::Init()) {
+                Console::Success("ScriptExecutor: call_method invocation ready");
+            } else {
+                Console::Warn("ScriptExecutor: call_method resolution failed");
+            }
+
+            if (EntityRadar::Init()) {
+                Console::Success("EntityRadar: sprite enumeration active");
+            } else {
+                Console::Warn("EntityRadar: sprite functions not resolved");
+            }
+
             suiteActive = true;
-            Console::Success("Intelligence Suite: ALL MODULES LOADED");
+            Console::Success("Intelligence Suite v2: ALL %d MODULES LOADED", PANEL_COUNT);
             return true;
         }
 
         static void Shutdown() {
             PacketSniffer::Shutdown();
             ScriptMonitor::Shutdown();
+            Teleporter::Shutdown();
+            MemoryScanner::Shutdown();
+            ScriptExecutor::Shutdown();
+            EntityRadar::Shutdown();
             if (MacroEngine::IsPlaying()) MacroEngine::StopPlayback();
             if (MacroEngine::IsRecording()) MacroEngine::StopRecording();
             suiteActive = false;
@@ -72,15 +111,29 @@ namespace W101Hook {
 
         static bool IsActive() { return suiteActive; }
 
-        // --- Input Processing ---
+        // --- Per-Frame Processing ---
 
-        static float ProcessAdvance(float dt) {
+        static float ProcessAdvance(root* r, float dt) {
             MacroEngine::Tick();
+            ScriptExecutor::ProcessQueue(r);
+            Teleporter::Update(r, dt);
+            EntityRadar::Update(r, dt);
             return SpeedControl::ProcessDt(dt);
         }
 
-        static bool ProcessKey(unsigned short key, bool down) {
-            // Suite-level keybinds: F5-F8 toggle panels
+        static bool ProcessKey(unsigned short key, bool down, root* r) {
+            // Ctrl+1 through Ctrl+8 toggle panels
+            if (down && (GetAsyncKeyState(VK_CONTROL) & 0x8000)) {
+                if (key >= '1' && key <= '8') {
+                    int panel = key - '1';
+                    if (panel < PANEL_COUNT) {
+                        panelVisible[panel] = !panelVisible[panel];
+                        return false;
+                    }
+                }
+            }
+
+            // F5-F8 kept for backward compat
             if (down) {
                 switch (key) {
                     case VK_F5: panelVisible[PANEL_SPEED]   = !panelVisible[PANEL_SPEED]; return false;
@@ -90,11 +143,20 @@ namespace W101Hook {
                 }
             }
 
-            // Pass to speed control
+            // Speed control
             if (!SpeedControl::HandleKey(key, down)) return false;
 
-            // Pass to macro engine
+            // Macro engine
             if (!MacroEngine::HandleKey(key, down)) return false;
+
+            // Teleporter
+            if (!Teleporter::HandleKey(key, down, r)) return false;
+
+            // Radar mode cycling: Ctrl+R
+            if (down && key == 'R' && (GetAsyncKeyState(VK_CONTROL) & 0x8000)) {
+                EntityRadar::CycleMode();
+                return false;
+            }
 
             // Record input for macro if recording
             if (MacroEngine::IsRecording()) {
@@ -115,7 +177,7 @@ namespace W101Hook {
             ScriptMonitor::ProcessFSCommand(cmd, args);
         }
 
-        // --- Overlay Rendering ---
+        // --- Overlay ---
 
         static void RenderOverlay(IDirect3DDevice9* dev, int startX, int startY) {
             if (!suiteActive) return;
@@ -124,26 +186,35 @@ namespace W101Hook {
             int y = startY;
 
             // Suite header
-            Overlay::DrawFilledRect(dev, x, y, 520, 20, Overlay::BgDark);
+            Overlay::DrawFilledRect(dev, x, y, 530, 20, Overlay::BgDark);
             Overlay::DrawText(x + 5, y + 3, Overlay::Cyan,
-                "INTELLIGENCE SUITE | F5:Speed F6:Net F7:Script F8:Macro");
+                "W101 INTELLIGENCE SUITE v2 | Ctrl+[1-8] toggle panels");
             y += 24;
 
             // Module status bar
-            Overlay::DrawFilledRect(dev, x, y, 520, 16, D3DCOLOR_ARGB(180, 20, 20, 30));
+            Overlay::DrawFilledRect(dev, x, y, 530, 16, D3DCOLOR_ARGB(180, 20, 20, 30));
             int statusX = x + 5;
             for (int i = 0; i < PANEL_COUNT; i++) {
                 D3DCOLOR c = panelVisible[i] ? panelColors[i] : D3DCOLOR_ARGB(255, 80, 80, 80);
                 Overlay::DrawText(statusX, y + 2, c, "[%s]", panelNames[i]);
-                statusX += 80;
+                statusX += 50;
             }
             y += 20;
 
-            // Individual panels
-            if (panelVisible[PANEL_SPEED])   y = RenderSpeedPanel(dev, x, y);
-            if (panelVisible[PANEL_NETWORK]) y = RenderNetworkPanel(dev, x, y);
-            if (panelVisible[PANEL_SCRIPTS]) y = RenderScriptPanel(dev, x, y);
-            if (panelVisible[PANEL_MACROS])  y = RenderMacroPanel(dev, x, y);
+            // Left column panels
+            int leftY = y;
+            if (panelVisible[PANEL_SPEED])      leftY = RenderSpeedPanel(dev, x, leftY);
+            if (panelVisible[PANEL_NETWORK])     leftY = RenderNetworkPanel(dev, x, leftY);
+            if (panelVisible[PANEL_SCRIPTS])     leftY = RenderScriptPanel(dev, x, leftY);
+            if (panelVisible[PANEL_MACROS])      leftY = RenderMacroPanel(dev, x, leftY);
+
+            // Right column panels
+            int rightX = x + 540;
+            int rightY = startY;
+            if (panelVisible[PANEL_TELEPORTER])  rightY = Teleporter::RenderPanel(dev, rightX, rightY);
+            if (panelVisible[PANEL_SCANNER])     rightY = MemoryScanner::RenderPanel(dev, rightX, rightY);
+            if (panelVisible[PANEL_EXECUTOR])    rightY = ScriptExecutor::RenderPanel(dev, rightX, rightY);
+            if (panelVisible[PANEL_RADAR])       rightY = EntityRadar::RenderPanel(dev, rightX, rightY);
         }
 
     private:
@@ -154,14 +225,11 @@ namespace W101Hook {
 
             int ty = y + 4;
             Overlay::DrawText(x + 5, ty, panelColors[PANEL_SPEED], "SPEED CONTROL"); ty += 16;
-
             Overlay::DrawText(x + 5, ty, SpeedControl::GetSpeedColor(),
                 "Speed: %s", SpeedControl::GetSpeedLabel()); ty += 14;
-
             Overlay::DrawText(x + 5, ty, Overlay::White,
                 "Real dt: %.4f  |  Mod dt: %.4f",
                 SpeedControl::GetRealDt(), SpeedControl::GetModDt()); ty += 14;
-
             Overlay::DrawText(x + 5, ty, Overlay::Gray,
                 "Drift: %.2fs  |  Num+/- speed  */  freeze",
                 SpeedControl::GetAccumDrift()); ty += 14;
@@ -171,11 +239,9 @@ namespace W101Hook {
                           static_cast<float>(SpeedControl::PRESET_COUNT - 1);
             int barW = 260;
             int filled = static_cast<int>(ratio * barW);
-
             Overlay::DrawFilledRect(dev, x + 10, ty, barW, 6, D3DCOLOR_ARGB(100, 60, 60, 60));
-            if (filled > 0) {
+            if (filled > 0)
                 Overlay::DrawFilledRect(dev, x + 10, ty, filled, 6, SpeedControl::GetSpeedColor());
-            }
 
             return y + h + 4;
         }
@@ -193,14 +259,12 @@ namespace W101Hook {
 
             Overlay::DrawText(x + 5, ty, panelColors[PANEL_NETWORK],
                 "PACKET SNIFFER %s", PacketSniffer::IsLogging() ? "[LIVE]" : "[PAUSED]"); ty += 16;
-
             Overlay::DrawText(x + 5, ty, Overlay::White,
                 "TX: %s (%u pkts, %s)  |  RX: %s (%u pkts, %s)",
                 PacketSniffer::FormatSize(stats.totalSent).c_str(), stats.packetsSent,
                 PacketSniffer::FormatRate(stats.sendRate).c_str(),
                 PacketSniffer::FormatSize(stats.totalRecv).c_str(), stats.packetsRecv,
                 PacketSniffer::FormatRate(stats.recvRate).c_str()); ty += 14;
-
             Overlay::DrawText(x + 5, ty, Overlay::Gray,
                 "Buffer: %d packets", PacketSniffer::GetPacketCount()); ty += 16;
 
@@ -208,7 +272,6 @@ namespace W101Hook {
                 D3DCOLOR dirColor = (pkt.dir == PacketSniffer::OUTBOUND) ?
                     D3DCOLOR_ARGB(255, 255, 150, 50) : D3DCOLOR_ARGB(255, 50, 200, 255);
                 const char* dirStr = (pkt.dir == PacketSniffer::OUTBOUND) ? "TX" : "RX";
-
                 std::string hex = PacketSniffer::HexDump(pkt, 16);
                 Overlay::DrawText(x + 5, ty, dirColor,
                     "%s %5u  %s", dirStr, pkt.size, hex.c_str());
@@ -231,9 +294,8 @@ namespace W101Hook {
             int ty = y + 4;
             Overlay::DrawText(x + 5, ty, panelColors[PANEL_SCRIPTS],
                 "SCRIPT MONITOR %s", ScriptMonitor::IsLogging() ? "[LIVE]" : "[PAUSED]"); ty += 16;
-
             Overlay::DrawText(x + 5, ty, Overlay::White,
-                "Total calls: %u  |  Unique methods: %d  |  FSCmds: %u",
+                "Total calls: %u  |  Unique: %d  |  FSCmds: %u",
                 ScriptMonitor::GetTotalCalls(),
                 ScriptMonitor::GetUniqueMethodCount(),
                 ScriptMonitor::GetTotalFsCmds()); ty += 14;
@@ -243,7 +305,6 @@ namespace W101Hook {
                     "Filter: \"%s\"", ScriptMonitor::GetFilter().c_str()); ty += 14;
             }
 
-            // Recent method calls
             Overlay::DrawText(x + 5, ty, Overlay::Yellow, "--- Methods ---"); ty += 14;
             for (auto& call : calls) {
                 std::string name = call.methodName;
@@ -253,7 +314,6 @@ namespace W101Hook {
                 ty += 13;
             }
 
-            // Recent FSCommands
             ty += 4;
             Overlay::DrawText(x + 5, ty, Overlay::Yellow, "--- FSCommands ---"); ty += 14;
             for (auto& cmd : fsCmds) {
@@ -276,7 +336,6 @@ namespace W101Hook {
 
             int ty = y + 4;
             Overlay::DrawText(x + 5, ty, panelColors[PANEL_MACROS], "MACRO ENGINE"); ty += 16;
-
             Overlay::DrawText(x + 5, ty, MacroEngine::GetStateColor(),
                 "State: %s  |  Speed: %.1fx",
                 MacroEngine::GetStateLabel(), MacroEngine::GetPlaybackSpeed()); ty += 14;
